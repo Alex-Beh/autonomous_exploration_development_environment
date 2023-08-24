@@ -19,6 +19,7 @@
 #include <geometry_msgs/msg/point_stamped.h>
 #include <geometry_msgs/msg/polygon_stamped.h>
 #include <sensor_msgs/msg/imu.h>
+#include "sensor_msgs/msg/laser_scan.hpp"
 
 #include <gazebo_msgs/msg/model_state.hpp>
 #include <gazebo_msgs/msg/entity_state.hpp>
@@ -70,6 +71,8 @@ int systemInitCount = 0;
 bool systemInited = false;
 
 pcl::PointCloud<pcl::PointXYZI>::Ptr scanData(new pcl::PointCloud<pcl::PointXYZI>());
+pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
+pcl::PointCloud<pcl::PointXYZI>::Ptr copy_cloud(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<pcl::PointXYZI>::Ptr terrainCloud(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<pcl::PointXYZI>::Ptr terrainCloudIncl(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<pcl::PointXYZI>::Ptr terrainCloudDwz(new pcl::PointCloud<pcl::PointXYZI>());
@@ -108,6 +111,134 @@ int odomRecIDPointer = 0;
 pcl::VoxelGrid<pcl::PointXYZI> terrainDwzFilter;
 
 rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubScanPointer;
+
+void rpLidarScanHandler(const sensor_msgs::msg::LaserScan::ConstSharedPtr input){
+  cloud->clear();
+  copy_cloud->clear();
+
+  std::vector<float> ranges = input->ranges;
+  cloud->points.resize(ranges.size());                                                     
+  cloud->width = ranges.size();
+  cloud->height = 1;
+  // cloud->header.stamp = input->header.stamp;
+  cloud->header.frame_id = "map";
+
+  /*--------------这段进行"角度range"到(x,y)坐标的转换---------------*/
+  //转换到二维XY平面坐标系下;
+  // std::cout<<"cloud其他初始化"<<std::endl;
+  for(int i=0; i< ranges.size(); i++)
+  {                    
+    double angle = input->angle_min + i * input->angle_increment;
+    double lX = ranges[i] * cos(angle);
+    double lY = ranges[i] * sin(angle);
+    float intensity = input->intensities[i];
+    cloud->points[i].x=lX;
+    cloud->points[i].y=lY;
+    cloud->points[i].z=0;
+    cloud->points[i].intensity=1;
+    //BUG 这个intensity注意  => 之后做显示如果能返回正确的intensity的话一定要使用到这个信息,不能直接赋值1
+  }
+  
+  /*--------------这段进行"角度range"到(x,y)坐标的转换---------------*/
+  /*------------------------这段给点云复制,多增加立体感end--------------------------##*/
+  std::vector<int> mapping;
+  //TAG 这里去除ranges里面的inf/NaN值不知道有没有用
+	pcl::removeNaNFromPointCloud(*cloud, *cloud, mapping);
+  pcl::copyPointCloud(*cloud, *copy_cloud);
+
+  for(int h=0;h<=20;h+=2)
+  {
+      for(int i=0;i<copy_cloud->points.size();i++)
+      {
+          copy_cloud->points[i].z=(float)h/10;
+      }
+      // std::cout<<"cloud_add.points[i].z: "<<(float)h/10<<std::endl;
+      *cloud += *copy_cloud;
+      // pcl::concatenatePointCloud(*cloud, *copy_cloud, *cloud);
+  }
+
+  /*------------------------这段给点云复制,多增加立体感end----------------------------##*/
+  /*------------------------------------------------------------上面这段是2D雷达 => 本地(x,y)坐标系---------------------------------------------------------------------------------*/
+  /*----------------------------------------------------下面这段是本地(x,y)坐标系 => 全局(x,y)坐标系---------------------------------------------------------------------------------*/
+  if (!systemInited) {
+    systemInitCount++;
+    if (systemInitCount > systemDelay) {
+      systemInited = true;
+    }
+    return;
+  }
+ 
+  double scanTime = rclcpp::Time(input->header.stamp).seconds();
+ 
+  if (odomSendIDPointer < 0)
+  {
+    return;
+  }
+  while (odomTimeStack[(odomRecIDPointer + 1) % stackNum] < scanTime &&
+         odomRecIDPointer != (odomSendIDPointer + 1) % stackNum)
+  {
+    odomRecIDPointer = (odomRecIDPointer + 1) % stackNum;
+  }
+ 
+  double odomRecTime = odomTime.seconds();
+  float vehicleRecX = vehicleX;
+  float vehicleRecY = vehicleY;
+  float vehicleRecZ = vehicleZ;
+  float vehicleRecRoll = vehicleRoll;
+  float vehicleRecPitch = vehiclePitch;
+  float vehicleRecYaw = vehicleYaw;
+  float terrainRecRoll = terrainRoll;
+  float terrainRecPitch = terrainPitch;
+ 
+  if (use_gazebo_time)
+  {
+    odomRecTime = odomTimeStack[odomRecIDPointer];
+    vehicleRecX = vehicleXStack[odomRecIDPointer];
+    vehicleRecY = vehicleYStack[odomRecIDPointer];
+    vehicleRecZ = vehicleZStack[odomRecIDPointer];
+    vehicleRecRoll = vehicleRollStack[odomRecIDPointer];
+    vehicleRecPitch = vehiclePitchStack[odomRecIDPointer];
+    vehicleRecYaw = vehicleYawStack[odomRecIDPointer];
+    terrainRecRoll = terrainRollStack[odomRecIDPointer];
+    terrainRecPitch = terrainPitchStack[odomRecIDPointer];
+  }
+ 
+  float sinTerrainRecRoll = sin(terrainRecRoll);
+  float cosTerrainRecRoll = cos(terrainRecRoll);
+  float sinTerrainRecPitch = sin(terrainRecPitch);
+  float cosTerrainRecPitch = cos(terrainRecPitch);
+ 
+  scanData->clear();
+  pcl::copyPointCloud(*cloud,*scanData);
+  pcl::removeNaNFromPointCloud(*scanData, *scanData, scanInd);
+ 
+  int scanDataSize = scanData->points.size();
+  for (int i = 0; i < scanDataSize; i++)
+  {
+    float pointX1 = scanData->points[i].x;
+    float pointY1 = scanData->points[i].y * cosTerrainRecRoll - scanData->points[i].z * sinTerrainRecRoll;
+    float pointZ1 = scanData->points[i].y * sinTerrainRecRoll + scanData->points[i].z * cosTerrainRecRoll;
+ 
+    float pointX2 = pointX1 * cosTerrainRecPitch + pointZ1 * sinTerrainRecPitch;
+    float pointY2 = pointY1;
+    float pointZ2 = -pointX1 * sinTerrainRecPitch + pointZ1 * cosTerrainRecPitch;
+ 
+    float pointX3 = pointX2 + vehicleRecX;
+    float pointY3 = pointY2 + vehicleRecY;
+    float pointZ3 = pointZ2 + vehicleRecZ;
+ 
+    scanData->points[i].x = pointX3;
+    scanData->points[i].y = pointY3;
+    scanData->points[i].z = pointZ3;
+  }
+  
+  scanData->is_dense=false;
+  sensor_msgs::msg::PointCloud2 scan_pointcloud2;
+  pcl::toROSMsg(*scanData, scan_pointcloud2);                       //1.数据  2.时间戳
+  scan_pointcloud2.header = input->header;
+  scan_pointcloud2.header.frame_id = "map";
+  pubScanPointer->publish(scan_pointcloud2);
+}
 
 void scanHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr scanIn)
 {
@@ -354,6 +485,8 @@ int main(int argc, char** argv)
   nh->get_parameter("maxIncl", maxIncl);
 
   auto subScan = nh->create_subscription<sensor_msgs::msg::PointCloud2>("/velodyne_points", 2, scanHandler);
+
+  auto subRplidarScan = nh->create_subscription<sensor_msgs::msg::LaserScan>("/scan", 2, rpLidarScanHandler);
 
   auto subTerrainCloud = nh->create_subscription<sensor_msgs::msg::PointCloud2>("/terrain_map", 2, terrainCloudHandler);
 
