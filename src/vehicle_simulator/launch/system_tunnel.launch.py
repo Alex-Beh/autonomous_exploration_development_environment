@@ -27,7 +27,7 @@ def generate_launch_description():
   declare_vehicleZ = DeclareLaunchArgument('vehicleZ', default_value='0.0', description='')
   declare_terrainZ = DeclareLaunchArgument('terrainZ', default_value='0.0', description='')
   declare_vehicleYaw = DeclareLaunchArgument('vehicleYaw', default_value='0.0', description='')
-  declare_gazebo_gui = DeclareLaunchArgument('gazebo_gui', default_value='false', description='')
+  declare_gazebo_gui = DeclareLaunchArgument('gazebo_gui', default_value='true', description='')
   declare_checkTerrainConn = DeclareLaunchArgument('checkTerrainConn', default_value='false', description='')
   
   start_local_planner = IncludeLaunchDescription(
@@ -58,7 +58,7 @@ def generate_launch_description():
 
   start_vehicle_simulator = IncludeLaunchDescription(
     PythonLaunchDescriptionSource(os.path.join(
-      get_package_share_directory('vehicle_simulator'), 'launch', 'vehicle_simulator.launch')
+      get_package_share_directory('vehicle_simulator'), 'launch', 'vehicle_simulator.launch.py')
     ),
     launch_arguments={
       'world_name': world_name,

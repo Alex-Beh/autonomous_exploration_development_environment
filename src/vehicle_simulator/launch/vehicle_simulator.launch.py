@@ -92,6 +92,15 @@ def generate_launch_description():
     output='screen',
   )
 
+  tf_lidar_base_link = Node(
+      package='tf2_ros',
+      executable='static_transform_publisher',
+      name='ouster_base_link',
+      output='screen',
+      arguments=["-0.064", "0", "0.25",
+                 "0.0", "0.0", "0.0", "sensor", "lidar"]
+    )
+      
   robot_xacro = os.path.join(get_package_share_directory('vehicle_simulator'), 'urdf', 'robot.sdf')
   spawn_robot = Node(
     package='gazebo_ros', 
@@ -154,7 +163,8 @@ def generate_launch_description():
         'use_sim_time': use_sim_time
       }
       ],
-      output='screen'
+    # remappings=[('/velodyne_points', '/2d_scan_pointcloud')],
+    output='screen'
   )
 
   delayed_start_vehicle_simulator = TimerAction(
@@ -197,6 +207,7 @@ def generate_launch_description():
   ld.add_action(OpaqueFunction(function=declare_world_action, args=[world_name]))
 
   ld.add_action(start_gazebo)
+  # ld.add_action(tf_lidar_base_link)
   ld.add_action(start_lidar_state_publisher)
   ld.add_action(spawn_lidar)
   ld.add_action(spawn_robot)
